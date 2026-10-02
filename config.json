@@ -1,0 +1,11 @@
+{
+  "token": "PUT_YOUR_NEW_DISCORD_BOT_TOKEN_HERE",
+  "botName": "CodeX",
+  "currency": "$",
+  "supportRoleId": "1524920170357981416",
+  "ticketCategoryId": "1541780977796382821",
+  "adsChannelId": "",
+  "storeChannelId": "",
+  "color": 16776960,
+  "accentColor": 16718362
+}
