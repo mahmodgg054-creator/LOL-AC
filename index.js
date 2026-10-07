@@ -16,9 +16,7 @@ const config = require('./config.json');
 config.token = process.env.TOKEN || process.env.DISCORD_TOKEN || config.token;
 
 const DATA_DIR = path.join(__dirname, 'data');
-if (!fs.existsSync(DATA_DIR)) {
-  fs.mkdirSync(DATA_DIR, { recursive: true });
-}
+if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 
 const STORE_FILE = path.join(DATA_DIR, 'store.json');
 const TICKETS_FILE = path.join(DATA_DIR, 'tickets.json');
@@ -57,17 +55,19 @@ const commands = [
     .addRoleOption(o => o.setName('role').setDescription('رتبة الدعم').setRequired(true)).setDefaultMemberPermissions(0),
   new SlashCommandBuilder().setName('setcategory').setDescription('حدد كاتيقوري التذاكر / Set ticket category')
     .addChannelOption(o => o.setName('category').setDescription('الكاتيقوري / Category').setRequired(true).addChannelTypes(ChannelType.GuildCategory)).setDefaultMemberPermissions(0),
+  new SlashCommandBuilder().setName('setwelcome').setDescription('حدد روم الترحيب / Set welcome channel')
+    .addChannelOption(o => o.setName('channel').setDescription('القناة / Channel').setRequired(true).addChannelTypes(ChannelType.GuildText)).setDefaultMemberPermissions(0),
   new SlashCommandBuilder().setName('products').setDescription('اعرض كل المنتجات'),
+  new SlashCommandBuilder().setName('newaccounts').setDescription('اعرض الحسابات الجديدة / Show new accounts by period').setDefaultMemberPermissions(0),
   new SlashCommandBuilder().setName('ping').setDescription('تحقق أن البوت يعمل')
 ];
 
 const rest = new REST({ version: '10' }).setToken(config.token);
 async function registerCommands() {
-  try { 
-    await rest.put(Routes.applicationCommands(client.user.id), { body: commands }); 
-    console.log('Commands registered OK'); 
-  }
-  catch (e) { console.error('Commands FAIL: ' + e.message); }
+  try {
+    await rest.put(Routes.applicationCommands(client.user.id), { body: commands });
+    console.log('Commands registered OK');
+  } catch (e) { console.error('Commands FAIL: ' + e.message); }
 }
 
 function featuresText(p) {
@@ -110,9 +110,7 @@ async function pingEveryone(channel, guildId) {
       allowedMentions: { parse: ['everyone', 'users', 'roles'] }
     });
     setTimeout(() => msg.delete().catch(() => {}), 8000);
-  } catch (e) {
-    console.error('MENTION FAILED: ' + e.message);
-  }
+  } catch (e) { console.error('MENTION FAILED: ' + e.message); }
 }
 
 function buildAd(p) {
@@ -180,6 +178,41 @@ client.once(Events.ClientReady, async (c) => {
   await registerCommands();
 });
 
+// 🎉 نظام الترحيب عند دخول عضو جديد
+client.on(Events.GuildMemberAdd, async (member) => {
+  try {
+    if (!config.welcomeChannelId) return;
+    const ch = member.guild.channels.cache.get(config.welcomeChannelId);
+    if (!ch) return;
+
+    const createdTs = Math.floor(member.user.createdTimestamp / 1000);
+    const accountAgeDays = Math.floor((Date.now() - member.user.createdTimestamp) / (1000 * 60 * 60 * 24));
+    const embed = new EmbedBuilder()
+      .setColor(config.color || 0x00FFFF)
+      .setAuthor({ name: 'عضو جديد انضم إلينا!', iconURL: member.guild.iconURL({ dynamic: true }) || undefined })
+      .setTitle('🎉 أهلاً بك في ' + member.guild.name + ' 🎉')
+      .setDescription(
+        '╭──────────────────────────────╮\n' +
+        '  💎 **نورت السيرفر يا غالي** 💎\n' +
+        '╰──────────────────────────────╯\n\n' +
+        '👤 **العضو:** ' + member + '\n' +
+        '📛 **الاسم:** `' + member.user.username + '`\n' +
+        '🆔 **الآيدي:** `' + member.id + '`\n' +
+        '👥 **رقم العضو:** `#' + member.guild.memberCount + '`\n' +
+        '📅 **عمر الحساب:** <t:' + createdTs + ':R> (`' + accountAgeDays + '` يوم)\n' +
+        '🕐 **وقت الانضمام:** <t:' + Math.floor(Date.now() / 1000) + ':R>\n\n' +
+        '━━━━━━━━━━━━━━━━━━━━━━━━━━\n' +
+        '🎁 **اتمنى لك وقتاً ممتعاً معنا!**\n' +
+        '💬 اقرأ القوانين واستمتع بكل المميزات.'
+      )
+      .setThumbnail(member.user.displayAvatarURL({ dynamic: true, size: 256 }))
+      .setFooter({ text: config.botName + ' • Welcome System' })
+      .setTimestamp();
+
+    await ch.send({ content: '🎊 ' + member + ' مرحباً بك!', embeds: [embed] }).catch(() => {});
+  } catch (e) { console.error('WELCOME ERR: ' + e.message); }
+});
+
 client.on(Events.InteractionCreate, async (interaction) => {
   try {
     if (interaction.isChatInputCommand()) return await handleCommand(interaction);
@@ -207,6 +240,42 @@ async function handleCommand(interaction) {
     config.ticketCategoryId = interaction.options.getChannel('category').id;
     fs.writeFileSync(path.join(__dirname, 'config.json'), JSON.stringify(config, null, 2));
     return interaction.reply({ content: '✅ تم تحديد كاتيقوري التذاكر / Ticket category set.', ephemeral: true });
+  }
+
+  if (c === 'setwelcome') {
+    config.welcomeChannelId = interaction.options.getChannel('channel').id;
+    fs.writeFileSync(path.join(__dirname, 'config.json'), JSON.stringify(config, null, 2));
+    return interaction.reply({ content: '✅ تم تحديد روم الترحيب / Welcome channel set.', ephemeral: true });
+  }
+
+  // 📅 عرض الحسابات الجديدة
+  if (c === 'newaccounts') {
+    const select = new StringSelectMenuBuilder()
+      .setCustomId('accounts_filter')
+      .setPlaceholder('اختر الفترة الزمنية / Choose period')
+      .addOptions(
+        new StringSelectMenuOptionBuilder().setLabel('آخر أسبوع').setDescription('حسابات منشأة خلال 7 أيام').setValue('1w').setEmoji('📅'),
+        new StringSelectMenuOptionBuilder().setLabel('آخر أسبوعين').setDescription('حسابات منشأة خلال 14 يوم').setValue('2w').setEmoji('📅'),
+        new StringSelectMenuOptionBuilder().setLabel('آخر 3 أسابيع').setDescription('حسابات منشأة خلال 21 يوم').setValue('3w').setEmoji('📅'),
+        new StringSelectMenuOptionBuilder().setLabel('آخر شهر').setDescription('حسابات منشأة خلال 30 يوم').setValue('1m').setEmoji('🗓️')
+      );
+    const embed = new EmbedBuilder()
+      .setColor(0x5865F2)
+      .setAuthor({ name: config.botName, iconURL: client.user.displayAvatarURL() })
+      .setTitle('📅 الحسابات الجديدة / New Accounts')
+      .setDescription(
+        '╭──────────────────────────────╮\n' +
+        '  ✨ **اختر الفترة الزمنية** ✨\n' +
+        '╰──────────────────────────────╯\n\n' +
+        '📅 **آخر أسبوع** — حسابات عمرها 7 أيام أو أقل\n' +
+        '📅 **آخر أسبوعين** — حسابات عمرها 14 يوم أو أقل\n' +
+        '📅 **آخر 3 أسابيع** — حسابات عمرها 21 يوم أو أقل\n' +
+        '🗓️ **آخر شهر** — حسابات عمرها 30 يوم أو أقل\n\n' +
+        '👇 اختر من القائمة أدناه'
+      )
+      .setFooter({ text: config.botName + ' • Accounts Filter' })
+      .setTimestamp();
+    return interaction.reply({ embeds: [embed], components: [new ActionRowBuilder().addComponents(select)], ephemeral: true });
   }
 
   if (c === 'products') {
@@ -269,7 +338,7 @@ async function handleButton(interaction) {
   if (id === 'admin_panel') {
     const embed = new EmbedBuilder().setColor(config.color)
       .setTitle('⚙ Admin Panel')
-      .setDescription('Commands:\n• `/createstore` - show store buttons\n• `/ads` - post premium ads\n• `/setup role:@support` - set support role\n• `/setcategory #category` - set ticket category\n• `/products` - show all products');
+      .setDescription('Commands:\n• `/createstore` - show store buttons\n• `/ads` - post premium ads\n• `/setup role:@support` - set support role\n• `/setcategory #category` - set ticket category\n• `/setwelcome #channel` - set welcome channel\n• `/newaccounts` - show new accounts by period\n• `/products` - show all products');
     return interaction.reply({ embeds: [embed], ephemeral: true });
   }
 
@@ -292,6 +361,80 @@ async function handleButton(interaction) {
 
 // ---------------- Select Menu ----------------
 async function handleSelect(interaction) {
+  // 📅 فلتر الحسابات الجديدة
+  if (interaction.customId === 'accounts_filter') {
+    await interaction.deferUpdate().catch(() => {});
+    const period = interaction.values[0];
+    const map = { '1w': 7, '2w': 14, '3w': 21, '1m': 30 };
+    const names = { '1w': 'آخر أسبوع', '2w': 'آخر أسبوعين', '3w': 'آخر 3 أسابيع', '1m': 'آخر شهر' };
+    const days = map[period];
+    const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
+
+    try {
+      // جلب كل الأعضاء
+      await interaction.guild.members.fetch();
+    } catch (e) { console.log('Fetch members err: ' + e.message); }
+
+    const matched = [];
+    interaction.guild.members.cache.forEach(m => {
+      if (m.user.bot) return;
+      if (m.user.createdTimestamp >= cutoff) {
+        matched.push({
+          id: m.id,
+          tag: m.user.username,
+          created: m.user.createdTimestamp,
+          joined: m.joinedTimestamp,
+          member: m
+        });
+      }
+    });
+
+    // ترتيب من الأحدث للأقدم
+    matched.sort((a, b) => b.created - a.created);
+
+    if (!matched.length) {
+      const empty = new EmbedBuilder()
+        .setColor(0xFF0000)
+        .setAuthor({ name: config.botName, iconURL: client.user.displayAvatarURL() })
+        .setTitle('📅 الحسابات الجديدة — ' + names[period])
+        .setDescription('╭──────────────────────────────╮\n  ❌ **لا توجد حسابات** ❌\n╰──────────────────────────────╯\n\nلم يتم العثور على أي حساب تم إنشاؤه خلال ' + names[period] + '.')
+        .setFooter({ text: config.botName + ' • Accounts Filter' })
+        .setTimestamp();
+      return interaction.editReply({ embeds: [empty], components: [] }).catch(() => {});
+    }
+
+    const lines = matched.slice(0, 30).map((m, i) => {
+      const createdTs = Math.floor(m.created / 1000);
+      const joinedStr = m.joined ? '<t:' + Math.floor(m.joined / 1000) + ':R>' : '`غير معروف`';
+      return '`' + (i + 1) + '.` <@' + m.id + '> — <t:' + createdTs + ':R> • انضم: ' + joinedStr;
+    }).join('\n');
+
+    const embed = new EmbedBuilder()
+      .setColor(0x5865F2)
+      .setAuthor({ name: config.botName + ' • Accounts Archive', iconURL: client.user.displayAvatarURL() })
+      .setTitle('📅 الحسابات الجديدة — ' + names[period])
+      .setDescription(
+        '╭──────────────────────────────╮\n' +
+        '  ✨ **تم العثور على الحسابات** ✨\n' +
+        '╰──────────────────────────────╯\n\n' +
+        '📊 **العدد الكلي:** `' + matched.length + '` حساب\n' +
+        '🗓️ **الفترة:** ' + names[period] + '\n' +
+        '━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n' +
+        lines +
+        (matched.length > 30 ? '\n\n⚠️ **يتم عرض أول 30 حساب فقط**' : '')
+      )
+      .setFooter({ text: config.botName + ' • Accounts Filter' })
+      .setTimestamp();
+
+    // إرسال رسالة فيها كل الحسابات ممنشنة
+    const mentionList = matched.slice(0, 30).map(m => '<@' + m.id + '>').join(' ');
+    await interaction.channel.send({
+      content: '📢 **حسابات جديدة (' + names[period] + '):**\n' + mentionList
+    }).catch(() => {});
+
+    return interaction.editReply({ embeds: [embed], components: [] }).catch(() => {});
+  }
+
   if (interaction.customId.startsWith('plan_')) {
     const pid = parseInt(interaction.customId.split('_')[1]);
     const p = store.products.find(x => x.id === pid);
@@ -337,20 +480,41 @@ async function openTicket(interaction, p, plan) {
   }
 
   const roleMention = config.supportRoleId ? '<@&' + config.supportRoleId + '>' : '@Support (set via /setup)';
-  const embed = new EmbedBuilder()
-    .setColor(config.color)
-    .setTitle('🎫 تذكرة شراء / Purchase Ticket')
-    .setDescription(
-      '**👤 العميل / Customer:** ' + user + '\n' +
-      '**📦 المنتج / Product:** ' + p.name + ' (# ' + p.id + ')\n' +
-      '**💰 السعر / Price:** ' + planTxt + '\n\n' +
-      '⏳ **في انتظار الاستلام / Waiting to be claimed...**'
-    )
-    .setThumbnail(p.image || null)
-    .setTimestamp();
-  if (plan) embed.addFields({ name: '📦 الخيار / Option', value: plan.label + ' — ' + config.currency + (plan.price || pp), inline: true });
+  const nowTs = Math.floor(Date.now() / 1000);
 
-  await ticketChannel.send({ content: roleMention, embeds: [embed], components: [ticketButtons(false)] });
+  // 🎫 رسالة تذكرة فخمة ومنظمة
+  const embed = new EmbedBuilder()
+    .setColor(0xFFD700)
+    .setAuthor({ name: config.botName + ' • Premium Purchase Ticket', iconURL: client.user.displayAvatarURL() })
+    .setTitle('🎫 تذكرة شراء فاخرة / Premium Purchase Ticket')
+    .setDescription(
+      '╭────────────────────────────────╮\n' +
+      '     💎 **مرحباً بك في متجرنا** 💎\n' +
+      '╰────────────────────────────────╯\n\n' +
+      '> 👤 **العميل / Customer:**\n' +
+      '> ' + user + ' (`' + user.username + '`)\n\n' +
+      '> 📦 **المنتج / Product:**\n' +
+      '> `' + p.name + '` — **#' + p.id + '**\n\n' +
+      '> 💰 **السعر / Price:**\n' +
+      '> `' + planTxt + '`\n\n' +
+      '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n' +
+      '⏳ **في انتظار استلام أحد أعضاء الدعم الفني...**\n' +
+      '> Waiting for a support member to claim...\n\n' +
+      '⚠️ **تنبيه:** يرجى الانتظار حتى يتم استلام تذكرتك\n' +
+      '⚠️ **Warning:** Please wait until your ticket is claimed\n' +
+      '🕐 **تاريخ الفتح:** <t:' + nowTs + ':R>'
+    )
+    .setFooter({ text: config.botName + ' • Premium Service • ' + guild.name, iconURL: guild.iconURL({ dynamic: true }) || undefined })
+    .setTimestamp();
+  if (p.image) embed.setThumbnail(p.image);
+  if (plan) embed.addFields({ name: '📦 الخيار المختار / Selected Option', value: '`' + plan.label + '` — `' + config.currency + (plan.price || pp) + '`', inline: false });
+
+  // ⬇️ منشن صاحب التذكرة + رتبة الدعم
+  await ticketChannel.send({
+    content: '👋 ' + user + ' | ' + roleMention,
+    embeds: [embed],
+    components: [ticketButtons(false)]
+  });
 
   tickets.tickets.push({
     channelId: ticketChannel.id,
@@ -363,11 +527,15 @@ async function openTicket(interaction, p, plan) {
 
   const replyEmbed = new EmbedBuilder()
     .setColor(0x00FF00)
+    .setAuthor({ name: config.botName, iconURL: client.user.displayAvatarURL() })
     .setTitle('🎫 تذكرتك جاهزة / Your Ticket Is Ready')
     .setDescription(
-      '**📦 المنتج / Product:** ' + p.name + '\n' +
-      '**💰 السعر / Price:** ' + planTxt + '\n\n' +
-      '👇 **اضغط الزر للانتقال للتذكرة / Click the button below to go to your ticket:**'
+      '╭──────────────────────────────╮\n' +
+      '  ✅ **تم إنشاء تذكرتك بنجاح** ✅\n' +
+      '╰──────────────────────────────╯\n\n' +
+      '📦 **المنتج / Product:** `' + p.name + '`\n' +
+      '💰 **السعر / Price:** `' + planTxt + '`\n\n' +
+      '👇 **اضغط الزر للانتقال للتذكرة / Click to go to your ticket:**'
     )
     .setTimestamp()
     .setFooter({ text: config.botName });
@@ -395,22 +563,27 @@ async function handleTicketButton(interaction, id) {
       return;
     }
 
-    // زر استلام التذكرة / Claim Ticket
     if (id === 'ticket_claim') {
       if (!ticketData) return interaction.reply({ content: '❌ بيانات التذكرة غير موجودة / Ticket data not found.', ephemeral: true });
       if (ticketData.claimed) return interaction.reply({ content: '⚠️ التذكرة تم استلامها مسبقاً / Ticket already claimed.', ephemeral: true });
 
       ticketData.claimed = true;
-      ticketData.claimedBy = interaction.user.username;
+      // ✅ بدون منشن — نستخدم الاسم فقط
+      const claimerName = interaction.member && interaction.member.displayName
+        ? interaction.member.displayName
+        : interaction.user.username;
+      ticketData.claimedBy = claimerName;
       saveTickets(tickets);
 
       const oldEmbed = interaction.message.embeds[0];
       const newEmbed = EmbedBuilder.from(oldEmbed)
+        .setColor(0x00FF00)
         .setDescription(
-          oldEmbed.description.replace(
-            '⏳ **في انتظار الاستلام / Waiting to be claimed...**',
-            '✅ **تم الاستلام بواسطة / Claimed by:** ' + interaction.user
-          )
+          oldEmbed.description
+            .replace('⏳ **في انتظار استلام أحد أعضاء الدعم الفني...**\n> Waiting for a support member to claim...',
+              '✅ **تم استلام التذكرة بواسطة / Ticket claimed by:**\n> `' + claimerName + '`\n> <t:' + Math.floor(Date.now() / 1000) + ':R>')
+            .replace('⏳ **في انتظار الاستلام / Waiting to be claimed...**',
+              '✅ **تم الاستلام بواسطة / Claimed by:** `' + claimerName + '`')
         );
       await interaction.message.edit({ embeds: [newEmbed], components: [ticketButtons(false)] }).catch(() => {});
 
@@ -418,28 +591,25 @@ async function handleTicketButton(interaction, id) {
         const ticketUser = await client.users.fetch(ticketData.userId);
         const dmEmbed = new EmbedBuilder()
           .setColor(0x00FF00)
+          .setAuthor({ name: config.botName, iconURL: client.user.displayAvatarURL() })
           .setTitle('🎫 تم استلام تذكرتك / Your Ticket Has Been Claimed')
           .setDescription(
             'مرحباً ' + ticketUser + ' 👋\n\n' +
-            '✅ **تم استلام تذكرتك بواسطة / Your ticket has been claimed by:** ' + interaction.user + '\n' +
-            '📦 **المنتج / Product:** ' + ticketData.productName + '\n\n' +
+            '✅ **تم استلام تذكرتك بواسطة / Claimed by:** `' + claimerName + '`\n' +
+            '📦 **المنتج / Product:** `' + ticketData.productName + '`\n\n' +
             '📞 **سيتم التواصل معك قريباً / You will be contacted soon.**'
           )
           .setTimestamp()
           .setFooter({ text: config.botName });
         await ticketUser.send({ embeds: [dmEmbed] }).catch(() => {});
-      } catch (dmErr) {
-        console.log('Could not DM user: ' + dmErr.message);
-      }
+      } catch (dmErr) { console.log('Could not DM user: ' + dmErr.message); }
 
       await interaction.reply({ content: '✅ تم استلام التذكرة / Ticket claimed!', ephemeral: true });
       return;
     }
 
-    // زر تذكير / Reminder
     if (id === 'ticket_reminder') {
       if (!ticketData) return interaction.reply({ content: '❌ بيانات التذكرة غير موجودة / Ticket data not found.', ephemeral: true });
-
       try {
         const ticketUser = await client.users.fetch(ticketData.userId);
         const reminderEmbed = new EmbedBuilder()
@@ -448,7 +618,7 @@ async function handleTicketButton(interaction, id) {
           .setDescription(
             'مرحباً ' + ticketUser + ' 👋\n\n' +
             '⏰ **تذكير بخصوص تذكرتك / This is a reminder about your ticket.**\n' +
-            '📦 **المنتج / Product:** ' + ticketData.productName + '\n\n' +
+            '📦 **المنتج / Product:** `' + ticketData.productName + '`\n\n' +
             '⚠️ **تنبيه: سيتم إغلاق التذكرة في حال عدم الرد خلال وقت قريب.**\n' +
             '⚠️ **Warning: The ticket will be closed if you do not respond soon.**\n\n' +
             '📩 **يرجى الرد في روم التذكرة / Please reply in the ticket channel.**'
@@ -456,15 +626,11 @@ async function handleTicketButton(interaction, id) {
           .setTimestamp()
           .setFooter({ text: config.botName });
         await ticketUser.send({ embeds: [reminderEmbed] }).catch(() => {});
-      } catch (dmErr) {
-        console.log('Could not DM user: ' + dmErr.message);
-      }
-
-      await interaction.reply({ content: '⏰ تم إرسال التذكير لصاحب التذكرة / Reminder sent to ticket owner.', ephemeral: true });
+      } catch (dmErr) { console.log('Could not DM user: ' + dmErr.message); }
+      await interaction.reply({ content: '⏰ تم إرسال التذكير لصاحب التذكرة / Reminder sent.', ephemeral: true });
       return;
     }
 
-    // زر قفل / Lock
     if (id === 'ticket_lock') {
       await interaction.deferUpdate().catch(() => {});
       const nowLocked = !(ch && ch.locked);
@@ -473,14 +639,12 @@ async function handleTicketButton(interaction, id) {
       return;
     }
 
-    // زر إغلاق / Close
     if (id === 'ticket_close') {
       await interaction.deferUpdate().catch(() => {});
       await interaction.followUp({ content: '🔒 تم إغلاق التذكرة / Ticket closed.', ephemeral: true }).catch(() => {});
       return;
     }
 
-    // زر حذف / Delete
     if (id === 'ticket_delete') {
       await interaction.deferUpdate().catch(() => {});
       tickets.tickets = tickets.tickets.filter(t => t.channelId !== ch.id);
